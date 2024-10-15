@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -15,14 +16,21 @@ var ErrManual = errors.New("manual")
 // Worker выполняет заданную функцию в цикле, пока не будет остановлен.
 // Гарантируется, что Worker используется только в одной горутине.
 type Worker struct {
-	fn func() error
-	// TODO: добавить поля
+	started chan int
+
+	ctx       context.Context
+	ctxCancel context.CancelCauseFunc
+
+	fn        func() error
+	afterStop func() error
 }
 
 // NewWorker создает новый экземпляр Worker с заданной функцией.
 // Но пока не запускает цикл с функцией.
 func NewWorker(fn func() error) *Worker {
-	return &Worker{fn: fn}
+	ctx, cancel := context.WithCancelCause(context.Background())
+
+	return &Worker{fn: fn, ctx: ctx, ctxCancel: cancel, started: make(chan int)}
 }
 
 // Start запускает отдельную горутину, в которой циклически
@@ -30,22 +38,34 @@ func NewWorker(fn func() error) *Worker {
 // либо пока функция не вернет ошибку.
 // Повторные вызовы Start игнорируются.
 func (w *Worker) Start() {
-	// TODO: реализовать требования
-	go func() {
-		for {
-			err := w.fn()
-			if err != nil {
-				return
+	// повторный запуск блокируем
+	select {
+	case <-w.started:
+		return
+	default:
+		close(w.started)
+		go func() {
+			for {
+				select {
+				case <-w.ctx.Done():
+					return
+				default:
+					err := w.fn()
+					if err != nil {
+						w.ctxCancel(ErrFailed)
+						return
+					}
+				}
 			}
-		}
-	}()
+		}()
+	}
 }
 
 // Stop останавливает выполнение цикла.
 // Вызов Stop до Start игнорируется.
 // Повторные вызовы Stop игнорируются.
 func (w *Worker) Stop() {
-	// TODO: реализовать требования
+	w.ctxCancel(ErrManual)
 }
 
 // AfterStop регистрирует функцию, которая
@@ -53,15 +73,19 @@ func (w *Worker) Stop() {
 // Можно зарегистрировать несколько функций.
 // Вызовы AfterStop после Start игнорируются.
 func (w *Worker) AfterStop(fn func()) {
-	// TODO: реализовать требования
+	select {
+	case <-w.started:
+		return
+	default:
+		context.AfterFunc(w.ctx, fn)
+	}
 }
 
 // Err возвращает причину остановки цикла:
 // - ErrManual - вручную через метод Stop;
 // - ErrFailed - из-за ошибки, которую вернула функция.
 func (w *Worker) Err() error {
-	// TODO: реализовать требования
-	return nil
+	return context.Cause(w.ctx)
 }
 
 // конец решения
